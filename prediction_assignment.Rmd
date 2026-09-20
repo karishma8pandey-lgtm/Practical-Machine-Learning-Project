@@ -1,0 +1,309 @@
+---
+title: "Practical Machine Learning Prediction Assignment"
+author: "Karishma Pandey"
+output: html_document
+---
+
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit, it is
+possible to collect large amounts of data about personal activity.
+This project uses accelerometer measurements collected from the
+belt, forearm, arm, and dumbbell of six participants performing
+barbell lifts in five different ways.
+
+The objective of this project is to predict the manner in which the
+exercise was performed. The response variable is `classe`, with
+five possible classes: A, B, C, D, and E.
+
+# Data
+
+The training dataset contains observations collected from
+accelerometers attached to different parts of the participants'
+bodies. The testing dataset contains 20 observations for which
+the exercise classification must be predicted.
+
+The training and testing datasets were downloaded from the
+sources provided in the course project instructions.
+
+# Loading Required Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+
+set.seed(12345)
+```
+
+# Loading the Data
+
+```{r load-data}
+training <- read.csv(
+  "pml-training.csv",
+  na.strings = c("", "NA", "#DIV/0!")
+)
+
+testing <- read.csv(
+  "pml-testing.csv",
+  na.strings = c("", "NA", "#DIV/0!")
+)
+
+dim(training)
+dim(testing)
+```
+
+# Exploratory Data Analysis
+
+The variable `classe` is the outcome variable that we want to
+predict. It represents the manner in which the exercise was
+performed.
+
+```{r class-distribution}
+table(training$classe)
+```
+
+# Data Cleaning
+
+The dataset contains several variables with a large number of
+missing values. Variables containing more than 60% missing values
+are removed. Near-zero variance variables are also removed because
+they provide little useful information for classification.
+
+The outcome variable `classe` is excluded from the predictors.
+Identification and time-related variables are also removed.
+
+```{r data-cleaning}
+
+# Separate the outcome variable from the predictors
+training_predictors <- training[, setdiff(names(training), "classe")]
+
+# Calculate the proportion of missing values in each predictor
+missing_fraction <- sapply(
+  training_predictors,
+  function(x) mean(is.na(x))
+)
+
+# Keep predictors with less than 60% missing values
+keep_columns <- names(
+  missing_fraction[missing_fraction < 0.60]
+)
+
+# Make sure only variables available in both datasets are selected
+keep_columns <- intersect(
+  keep_columns,
+  names(testing)
+)
+
+# Create cleaned datasets
+training_clean <- training[, c(keep_columns, "classe")]
+testing_clean <- testing[, keep_columns]
+
+# Remove near-zero variance predictors
+nzv <- nearZeroVar(training_clean[, keep_columns])
+
+if (length(nzv) > 0) {
+  keep_columns <- keep_columns[-nzv]
+}
+
+# Recreate cleaned datasets after NZV removal
+training_clean <- training[, c(keep_columns, "classe")]
+testing_clean <- testing[, keep_columns]
+
+# Remove the first seven identification/time-related variables
+training_clean <- training_clean[, -c(1:7)]
+testing_clean <- testing_clean[, -c(1:7)]
+
+# Check dimensions
+dim(training_clean)
+dim(testing_clean)
+```
+
+```{r missing-check}
+sum(is.na(training_clean))
+sum(is.na(testing_clean))
+```
+
+# Training and Validation Split
+
+The cleaned training data are divided into a training set and a
+validation set. Approximately 70% of the observations are used
+for model training and the remaining 30% are reserved for
+validation. The validation data are not used to fit the model,
+allowing its performance to be evaluated on previously unseen
+observations.
+
+```{r split-data}
+
+set.seed(12345)
+
+train_index <- createDataPartition(
+  training_clean$classe,
+  p = 0.70,
+  list = FALSE
+)
+
+train_data <- training_clean[train_index, ]
+
+validation_data <- training_clean[-train_index, ]
+
+dim(train_data)
+dim(validation_data)
+```
+
+# Random Forest Model
+
+A Random Forest classifier is used because the response variable
+`classe` is categorical and the dataset contains multiple
+sensor-based predictor variables. Five-fold cross-validation is
+used during model training to assess model performance across
+different subsets of the training data.
+
+```{r random-forest, message=FALSE, warning=FALSE}
+
+set.seed(12345)
+
+control <- trainControl(
+  method = "cv",
+  number = 5
+)
+
+rf_model <- train(
+  classe ~ .,
+  data = train_data,
+  method = "rf",
+  trControl = control,
+  ntree = 300
+)
+
+rf_model
+```
+
+# Model Evaluation
+
+The trained Random Forest model is evaluated on the validation
+dataset, which was not used during model training.
+
+```{r validation-results}
+
+validation_predictions <- predict(
+  rf_model,
+  newdata = validation_data
+)
+
+# Ensure predictions and reference values have identical factor levels
+validation_predictions <- factor(
+  validation_predictions,
+  levels = levels(factor(training_clean$classe))
+)
+
+validation_actual <- factor(
+  validation_data$classe,
+  levels = levels(factor(training_clean$classe))
+)
+
+confusionMatrix(
+  validation_predictions,
+  validation_actual
+)
+```
+
+## Expected Out-of-Sample Error
+
+The validation accuracy is used to estimate the expected
+out-of-sample error. The error rate is calculated as one minus
+the validation accuracy.
+
+```{r out-of-sample-error}
+
+accuracy <- confusionMatrix(
+  validation_predictions,
+  validation_actual
+)$overall["Accuracy"]
+
+out_of_sample_error <- 1 - accuracy
+
+accuracy
+out_of_sample_error
+```
+
+# Variable Importance
+
+Variable importance is examined to identify the predictor variables
+that contributed most to the Random Forest classification.
+
+```{r variable-importance, fig.width=8, fig.height=6}
+
+plot(
+  varImp(rf_model),
+  top = 15,
+  main = "Top 15 Predictor Variables"
+)
+```
+
+# Final Model
+
+After evaluating the Random Forest model on the validation data,
+the final model is trained using the complete cleaned training
+dataset. This allows the model to use all available labeled
+observations before making predictions on the 20 test cases.
+
+```{r final-model, message=FALSE, warning=FALSE}
+
+set.seed(12345)
+
+final_model <- train(
+  classe ~ .,
+  data = training_clean,
+  method = "rf",
+  trControl = trainControl(method = "none"),
+  tuneGrid = data.frame(mtry = 26),
+  ntree = 300
+)
+
+final_model
+```
+
+# Prediction of the Test Cases
+
+The final Random Forest model is used to predict the exercise
+classification for the 20 observations in the provided testing
+dataset.
+
+```{r test-predictions}
+
+final_predictions <- predict(
+  final_model,
+  newdata = testing_clean
+)
+
+final_predictions
+```
+
+```{r prediction-list}
+
+prediction_table <- data.frame(
+  Problem_ID = 1:20,
+  Prediction = final_predictions
+)
+
+prediction_table
+```
+
+# Conclusion
+
+A Random Forest classification model was developed to predict
+the manner in which participants performed the weight lifting
+exercise. The data were cleaned by removing variables with
+excessive missing values, near-zero variance variables, and
+identification-related variables.
+
+The model was trained using five-fold cross-validation. The
+best model used an `mtry` value of 26 and achieved a validation
+accuracy of approximately 99.47%. The corresponding estimated
+out-of-sample error was approximately 0.53%.
+
+The final Random Forest model was then trained using the complete
+cleaned training dataset. This final model was used to predict
+the exercise classification for the 20 observations in the
+provided testing dataset.
+
